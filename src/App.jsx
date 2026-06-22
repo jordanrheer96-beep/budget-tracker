@@ -2,7 +2,9 @@ import { useState, useEffect, useRef } from "react";
 
 const STORAGE_KEY = "ca-budget-core-v1";
 
-const BANKS = ["TD Canada Trust", "Simplii Financial", "Wealthsimple", "CIBC", "RBC", "Other"];
+const DEFAULT_ACCOUNTS = [
+  { id: "acc-default", name: "Main Chequing", institution: "TD Canada Trust", type: "chequing" },
+];
 
 const DEFAULT_CATEGORIES = [
   { id: "mortgage", name: "Mortgage", type: "spend", budget: 0, color: "#4A90D9" },
@@ -15,7 +17,6 @@ const DEFAULT_CATEGORIES = [
   { id: "subscriptions", name: "Subscriptions", type: "spend", budget: 0, color: "#E05C5C" },
   { id: "personal", name: "Personal / Misc", type: "spend", budget: 0, color: "#3AAEA4" },
   { id: "emergency", name: "Emergency Fund", type: "save", budget: 0, color: "#2E7D9A" },
-  { id: "collections", name: "Collections Debt", type: "debt", budget: 0, color: "#FF4444", balance: 4300, rate: 0, isCollections: true, priority: 1 },
   { id: "cc", name: "Credit Card", type: "debt", budget: 0, color: "#C0392B", balance: 0, rate: 19.99, priority: 2 },
   { id: "loan", name: "Loan / LOC", type: "debt", budget: 0, color: "#922B21", balance: 0, rate: 8, priority: 3 },
 ];
@@ -113,6 +114,7 @@ export default function BudgetTracker() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [income, setIncome] = useState({ netPay: 0, frequency: "biweekly", nextPayDate: "" });
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  const [accounts, setAccounts] = useState(DEFAULT_ACCOUNTS);
   const [transactions, setTransactions] = useState([]);
   const [modal, setModal] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
@@ -120,7 +122,8 @@ export default function BudgetTracker() {
   const fileInputRef = useRef();
 
   const [incomeForm, setIncomeForm] = useState({ netPay: "", frequency: "biweekly", nextPayDate: "" });
-  const [transactionForm, setTransactionForm] = useState({ date: todayString(), description: "", amount: "", categoryId: "", bank: "TD Canada Trust" });
+  const [transactionForm, setTransactionForm] = useState({ date: todayString(), description: "", amount: "", categoryId: "", accountId: "" });
+  const [accountForm, setAccountForm] = useState({ name: "", institution: "", type: "chequing" });
   const [categoryForm, setCategoryForm] = useState({ name: "", type: "spend", budget: "", color: "#4A90D9", balance: "", rate: "" });
   const [csvRows, setCsvRows] = useState([]);
   const [csvError, setCsvError] = useState("");
@@ -139,6 +142,7 @@ export default function BudgetTracker() {
         if (data.income) setIncome(data.income);
         if (data.categories) setCategories(data.categories);
         if (data.transactions) setTransactions(data.transactions);
+        if (data.accounts) setAccounts(data.accounts);
       }
     } catch (err) {
       console.error("Failed to load saved data", err);
@@ -146,12 +150,13 @@ export default function BudgetTracker() {
     setIsReady(true);
   }
 
-  async function saveToStorage(nextIncome, nextCategories, nextTransactions) {
+  async function saveToStorage(nextState) {
     try {
       const payload = JSON.stringify({
-        income: nextIncome,
-        categories: nextCategories,
-        transactions: nextTransactions,
+        income: nextState.income !== undefined ? nextState.income : income,
+        categories: nextState.categories !== undefined ? nextState.categories : categories,
+        transactions: nextState.transactions !== undefined ? nextState.transactions : transactions,
+        accounts: nextState.accounts !== undefined ? nextState.accounts : accounts,
       });
       await window.storage.set(STORAGE_KEY, payload);
     } catch (err) {
@@ -180,7 +185,6 @@ export default function BudgetTracker() {
   const spendingCategories = categories.filter((c) => c.type === "spend");
   const savingsCategories = categories.filter((c) => c.type === "save");
   const debtCategories = categories.filter((c) => c.type === "debt").sort((a, b) => (a.priority || 9) - (b.priority || 9));
-  const collectionsCategory = categories.find((c) => c.isCollections);
 
   const totalSpent = spendingCategories.reduce((sum, c) => sum + (spentByCategory[c.id] || 0), 0);
   const totalBudgeted = categories.reduce((sum, c) => sum + (c.budget || 0), 0);
@@ -193,7 +197,7 @@ export default function BudgetTracker() {
       nextPayDate: incomeForm.nextPayDate,
     };
     setIncome(nextIncome);
-    saveToStorage(nextIncome, categories, transactions);
+    saveToStorage({ income: nextIncome });
     setModal(null);
     showToast("Income saved");
   }
@@ -219,8 +223,8 @@ export default function BudgetTracker() {
 
     const nextTransactions = [newTransaction, ...transactions];
     setTransactions(nextTransactions);
-    saveToStorage(income, nextCategories, nextTransactions);
-    setTransactionForm({ date: todayString(), description: "", amount: "", categoryId: "", bank: transactionForm.bank });
+    saveToStorage({ categories: nextCategories, transactions: nextTransactions });
+    setTransactionForm({ date: todayString(), description: "", amount: "", categoryId: "", accountId: transactionForm.accountId });
     setModal(null);
     showToast("Transaction added");
   }
@@ -228,13 +232,13 @@ export default function BudgetTracker() {
   function handleDeleteTransaction(id) {
     const nextTransactions = transactions.filter((t) => t.id !== id);
     setTransactions(nextTransactions);
-    saveToStorage(income, categories, nextTransactions);
+    saveToStorage({ transactions: nextTransactions });
   }
 
   function handleUpdateCategoryField(categoryId, field, value) {
     const nextCategories = categories.map((c) => (c.id === categoryId ? { ...c, [field]: parseFloat(value) || 0 } : c));
     setCategories(nextCategories);
-    saveToStorage(income, nextCategories, transactions);
+    saveToStorage({ categories: nextCategories });
   }
 
   function handleAddCategory() {
@@ -251,10 +255,33 @@ export default function BudgetTracker() {
     };
     const nextCategories = [...categories, newCategory];
     setCategories(nextCategories);
-    saveToStorage(income, nextCategories, transactions);
+    saveToStorage({ categories: nextCategories });
     setCategoryForm({ name: "", type: "spend", budget: "", color: "#4A90D9", balance: "", rate: "" });
     setModal(null);
     showToast("Category added");
+  }
+
+  function handleAddAccount() {
+    if (!accountForm.name) return;
+    const newAccount = {
+      id: Date.now().toString(),
+      name: accountForm.name,
+      institution: accountForm.institution || "Other",
+      type: accountForm.type,
+    };
+    const nextAccounts = [...accounts, newAccount];
+    setAccounts(nextAccounts);
+    saveToStorage({ accounts: nextAccounts });
+    setAccountForm({ name: "", institution: "", type: "chequing" });
+    setModal(null);
+    showToast("Account added");
+  }
+
+  function handleDeleteAccount(id) {
+    const nextAccounts = accounts.filter((a) => a.id !== id);
+    setAccounts(nextAccounts);
+    saveToStorage({ accounts: nextAccounts });
+    showToast("Account removed");
   }
 
   function handleCsvFileSelected(event) {
@@ -298,7 +325,7 @@ export default function BudgetTracker() {
           description: cells[descriptionIndex] || "Row " + (index + 1),
           amount,
           categoryId: "",
-          bank: "Imported",
+          accountId: "",
           selected: true,
         };
       })
@@ -315,12 +342,12 @@ export default function BudgetTracker() {
     const mappedTransactions = rowsToImport.map((row) => {
       const category = categories.find((c) => c.id === row.categoryId);
       const transactionType = category && category.type === "save" ? "save" : category && category.type === "debt" ? "debtpay" : "expense";
-      const rest = { id: row.id, date: row.date, description: row.description, amount: row.amount, categoryId: row.categoryId, bank: row.bank };
+      const rest = { id: row.id, date: row.date, description: row.description, amount: row.amount, categoryId: row.categoryId, accountId: row.accountId };
       return { ...rest, type: transactionType };
     });
     const nextTransactions = [...mappedTransactions, ...transactions];
     setTransactions(nextTransactions);
-    saveToStorage(income, categories, nextTransactions);
+    saveToStorage({ transactions: nextTransactions });
     setCsvRows([]);
     setModal(null);
     showToast(mappedTransactions.length + " transactions imported");
@@ -332,7 +359,6 @@ export default function BudgetTracker() {
 
     const context = {
       monthlyNetIncome: monthlyNet.toFixed(2),
-      collectionsBalance: collectionsCategory ? collectionsCategory.balance || 0 : 0,
       totalDebt: debtCategories.reduce((sum, c) => sum + (c.balance || 0), 0).toFixed(2),
       budgetCategories: categories.map((c) => ({
         name: c.name,
@@ -342,7 +368,6 @@ export default function BudgetTracker() {
         overBudget: c.budget > 0 && (spentByCategory[c.id] || 0) > c.budget,
         balance: c.type === "debt" ? c.balance : undefined,
         rate: c.type === "debt" ? c.rate : undefined,
-        isCollections: c.isCollections || false,
       })),
       unallocatedMonthly: unallocated.toFixed(2),
       recentTransactions: transactions.slice(0, 25).map((t) => ({
@@ -355,9 +380,9 @@ export default function BudgetTracker() {
     };
 
     const systemPrompt =
-      "You are a sharp, empathetic Canadian personal finance advisor helping a household (shared between partners) manage their budget. They may have a collections debt that is their #1 priority. Analyze their data and return ONLY valid JSON, no markdown, no backticks, no extra text, in this exact structure: " +
-      '{"score": <number 1-100>, "scoreLabel": "Poor|Fair|Good|Strong", "summary": "2-sentence honest snapshot", "collectionsAlert": "specific urgent advice if there is a collections balance, otherwise null", "insights": [{"type": "warning|tip|win", "title": "short title", "detail": "specific actionable detail using their real numbers"}], "debtSteps": ["step1 with real numbers", "step2", "step3"], "monthsToDebtFree": <number or null>, "savingsTips": ["tip1 using their numbers", "tip2", "tip3"]}' +
-      " Use actual CAD dollar amounts from their data. Be specific and direct. Reference Canadian context like credit bureaus and collections agencies where relevant. Maximum 4 insights.";
+      "You are a sharp, empathetic Canadian personal finance advisor helping a household (shared between partners) manage their budget. Analyze their data and return ONLY valid JSON, no markdown, no backticks, no extra text, in this exact structure: " +
+      '{"score": <number 1-100>, "scoreLabel": "Poor|Fair|Good|Strong", "summary": "2-sentence honest snapshot", "insights": [{"type": "warning|tip|win", "title": "short title", "detail": "specific actionable detail using their real numbers"}], "debtSteps": ["step1 with real numbers", "step2", "step3"], "monthsToDebtFree": <number or null>, "savingsTips": ["tip1 using their numbers", "tip2", "tip3"]}' +
+      " Use actual CAD dollar amounts from their data. Be specific and direct. Maximum 4 insights.";
 
     try {
       const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -394,6 +419,7 @@ export default function BudgetTracker() {
   const tabs = [
     { id: "dashboard", label: "Dashboard" },
     { id: "budget", label: "Budget" },
+    { id: "accounts", label: "Accounts" },
     { id: "transactions", label: "Transactions" },
     { id: "import", label: "Import CSV" },
     { id: "insights", label: "AI Insights" },
@@ -418,16 +444,6 @@ export default function BudgetTracker() {
           Edit Income
         </button>
       </div>
-
-      {collectionsCategory && collectionsCategory.balance > 0 && (
-        <div style={{ background: "#1A0505", borderBottom: "2px solid #FF4444", padding: "9px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#FF6B6B" }}>Collections — Top Priority</div>
-            <div style={{ fontSize: 10, color: colors.muted }}>Pay this first. It's hurting your credit score now.</div>
-          </div>
-          <div style={{ fontWeight: 800, fontSize: 16, color: "#FF4444" }}>{formatMoney(collectionsCategory.balance)}</div>
-        </div>
-      )}
 
       <div style={{ display: "flex", overflowX: "auto", background: colors.surface, borderBottom: "1px solid " + colors.border }}>
         {tabs.map((tab) => (
@@ -460,7 +476,6 @@ export default function BudgetTracker() {
             spendingCategories={spendingCategories}
             savingsCategories={savingsCategories}
             debtCategories={debtCategories}
-            collectionsCategory={collectionsCategory}
             spentByCategory={spentByCategory}
             unallocated={unallocated}
           />
@@ -477,10 +492,19 @@ export default function BudgetTracker() {
           />
         )}
 
+        {activeTab === "accounts" && (
+          <AccountsTab
+            accounts={accounts}
+            onOpenAdd={() => setModal("account")}
+            onDelete={handleDeleteAccount}
+          />
+        )}
+
         {activeTab === "transactions" && (
           <TransactionsTab
             transactions={transactions}
             categories={categories}
+            accounts={accounts}
             thisMonthCount={thisMonthTransactions.length}
             onOpenAdd={() => setModal("transaction")}
             onDelete={handleDeleteTransaction}
@@ -521,12 +545,16 @@ export default function BudgetTracker() {
               spendingCategories={spendingCategories}
               savingsCategories={savingsCategories}
               debtCategories={debtCategories}
+              accounts={accounts}
               onCancel={() => setModal(null)}
               onSave={handleAddTransaction}
             />
           )}
           {modal === "category" && (
             <CategoryForm form={categoryForm} setForm={setCategoryForm} onCancel={() => setModal(null)} onSave={handleAddCategory} />
+          )}
+          {modal === "account" && (
+            <AccountForm form={accountForm} setForm={setAccountForm} onCancel={() => setModal(null)} onSave={handleAddAccount} />
           )}
         </Modal>
       )}
@@ -544,7 +572,6 @@ function DashboardTab(props) {
   const summaryCards = [
     { label: "Net Pay / Month", value: formatMoney(props.monthlyNet), color: colors.blue, sub: props.income.frequency || "—" },
     { label: "Spent This Month", value: formatMoney(props.totalSpent), color: colors.red, sub: "of " + formatMoney(props.spendingCategories.reduce((s, c) => s + c.budget, 0)) + " budget" },
-    { label: "Collections Remaining", value: formatMoney(props.collectionsCategory ? props.collectionsCategory.balance || 0 : 0), color: "#FF4444", sub: "Pay first" },
   ];
 
   return (
@@ -562,7 +589,7 @@ function DashboardTab(props) {
       {props.income.netPay > 0 && (
         <div style={{ background: props.unallocated >= 0 ? "#0D2818" : "#2D1111", border: "1px solid " + (props.unallocated >= 0 ? "#1A4731" : "#5C1A1A"), borderRadius: 9, padding: "10px 14px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 12, color: props.unallocated >= 0 ? colors.green : colors.red }}>
-            {props.unallocated >= 0 ? "Unallocated — consider putting toward collections" : "Over-budgeted by"}
+            {props.unallocated >= 0 ? "Unallocated this month" : "Over-budgeted by"}
           </span>
           <span style={{ fontWeight: 700, fontSize: 15, color: props.unallocated >= 0 ? colors.green : colors.red }}>{formatMoney(Math.abs(props.unallocated))}</span>
         </div>
@@ -600,10 +627,10 @@ function DashboardTab(props) {
         <div>
           <SectionHeading>Debt</SectionHeading>
           {props.debtCategories.map((category) => (
-            <div key={category.id} style={{ ...cardStyle, marginBottom: 8, padding: "11px 13px", borderColor: category.isCollections ? "#5C1A1A" : colors.border }}>
-              <div style={{ fontSize: 12, color: category.isCollections ? "#FF6B6B" : colors.muted, marginBottom: 3 }}>{category.name}</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: category.isCollections ? "#FF4444" : "#FBBF24" }}>{formatMoney(category.balance || 0)}</div>
-              <div style={{ fontSize: 10, color: colors.dim }}>{category.rate ? category.rate + "% interest" : "In collections"}</div>
+            <div key={category.id} style={{ ...cardStyle, marginBottom: 8, padding: "11px 13px" }}>
+              <div style={{ fontSize: 12, color: colors.muted, marginBottom: 3 }}>{category.name}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#FBBF24" }}>{formatMoney(category.balance || 0)}</div>
+              <div style={{ fontSize: 10, color: colors.dim }}>{category.rate}% interest</div>
               {props.spentByCategory[category.id] > 0 && <div style={{ fontSize: 11, color: colors.green, marginTop: 3 }}>Paid: {formatMoney(props.spentByCategory[category.id])}</div>}
             </div>
           ))}
@@ -631,13 +658,13 @@ function BudgetTab(props) {
             .filter((c) => c.type === type)
             .sort((a, b) => (a.priority || 9) - (b.priority || 9))
             .map((category) => (
-              <div key={category.id} style={{ display: "flex", alignItems: "center", gap: 9, ...cardStyle, marginBottom: 7, padding: "11px 13px", borderColor: category.isCollections ? "#5C1A1A" : colors.border }}>
+              <div key={category.id} style={{ display: "flex", alignItems: "center", gap: 9, ...cardStyle, marginBottom: 7, padding: "11px 13px" }}>
                 <div style={{ width: 8, height: 8, borderRadius: "50%", background: category.color, flexShrink: 0 }} />
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, color: category.isCollections ? "#FF6B6B" : colors.text }}>{category.name}</div>
+                  <div style={{ fontSize: 13, color: colors.text }}>{category.name}</div>
                   {type === "debt" && (
                     <div style={{ fontSize: 10, color: colors.muted }}>
-                      {category.isCollections ? "In collections" : category.rate + "% · " + formatMoney(category.balance || 0) + " left"}
+                      {category.rate + "% · " + formatMoney(category.balance || 0) + " left"}
                     </div>
                   )}
                 </div>
@@ -692,6 +719,40 @@ function BudgetTab(props) {
   );
 }
 
+const ACCOUNT_TYPE_LABELS = {
+  chequing: "Chequing",
+  savings: "Savings",
+  credit: "Credit Card",
+  other: "Other",
+};
+
+function AccountsTab(props) {
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ fontSize: 12, color: colors.muted }}>Add the bank and credit accounts you want to log transactions against.</div>
+        <button onClick={props.onOpenAdd} style={{ ...buttonStyle(), fontSize: 12, padding: "7px 11px" }}>+ Add</button>
+      </div>
+
+      {props.accounts.length === 0 && (
+        <div style={{ ...cardStyle, textAlign: "center", padding: "40px", color: colors.muted }}>
+          No accounts yet. Add your first bank or credit card account.
+        </div>
+      )}
+
+      {props.accounts.map((account) => (
+        <div key={account.id} style={{ display: "flex", alignItems: "center", gap: 9, ...cardStyle, marginBottom: 7, padding: "11px 13px" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, color: colors.text }}>{account.name}</div>
+            <div style={{ fontSize: 10, color: colors.muted }}>{account.institution} · {ACCOUNT_TYPE_LABELS[account.type] || account.type}</div>
+          </div>
+          <button onClick={() => props.onDelete(account.id)} style={{ background: "none", border: "none", color: colors.muted, cursor: "pointer", fontSize: 14, padding: 3 }}>✕</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TransactionsTab(props) {
   return (
     <div>
@@ -713,7 +774,7 @@ function TransactionsTab(props) {
             <div style={{ width: 7, height: 7, borderRadius: "50%", background: category ? category.color : colors.muted, flexShrink: 0 }} />
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 13 }}>{transaction.description}</div>
-              <div style={{ fontSize: 10, color: colors.muted, marginTop: 2 }}>{transaction.date} · {category ? category.name : "?"} · {transaction.bank}</div>
+              <div style={{ fontSize: 10, color: colors.muted, marginTop: 2 }}>{transaction.date} · {category ? category.name : "?"} · {(props.accounts.find((a) => a.id === transaction.accountId) || {}).name || "No account"}</div>
             </div>
             <div style={{ fontWeight: 600, fontSize: 13, color: transaction.type === "save" ? colors.green : transaction.type === "debtpay" ? "#FBBF24" : colors.red }}>
               {transaction.type === "save" ? "+" : "-"}{formatMoney(transaction.amount)}
@@ -844,13 +905,6 @@ function InsightsTab(props) {
               <div style={{ fontSize: 12, color: colors.muted, lineHeight: 1.5 }}>{ai.summary}</div>
             </div>
           </div>
-
-          {ai.collectionsAlert && (
-            <div style={{ background: "#1A0505", border: "1px solid #FF4444", borderRadius: 10, padding: "13px 15px", marginBottom: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#FF6B6B", marginBottom: 6 }}>Collections — Act Now</div>
-              <div style={{ fontSize: 12, color: "#FCA5A5", lineHeight: 1.6 }}>{ai.collectionsAlert}</div>
-            </div>
-          )}
 
           {ai.insights && ai.insights.length > 0 && (
             <div>
@@ -1004,13 +1058,20 @@ function TransactionForm(props) {
           {props.savingsCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </optgroup>
         <optgroup label="Debt">
-          {props.debtCategories.map((c) => <option key={c.id} value={c.id}>{c.isCollections ? "⚠ " + c.name : c.name}</option>)}
+          {props.debtCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </optgroup>
       </select>
-      <FieldLabel>Bank</FieldLabel>
-      <select value={form.bank} onChange={(e) => setForm((p) => ({ ...p, bank: e.target.value }))} style={inputStyle}>
-        {BANKS.map((bank) => <option key={bank}>{bank}</option>)}
-      </select>
+      <FieldLabel>Account</FieldLabel>
+      {props.accounts.length === 0 ? (
+        <div style={{ fontSize: 12, color: colors.muted, background: colors.background, borderRadius: 6, padding: "9px 11px" }}>
+          No accounts yet. Add one in the Accounts tab first.
+        </div>
+      ) : (
+        <select value={form.accountId} onChange={(e) => setForm((p) => ({ ...p, accountId: e.target.value }))} style={inputStyle}>
+          <option value="">Select…</option>
+          {props.accounts.map((a) => <option key={a.id} value={a.id}>{a.name} ({a.institution})</option>)}
+        </select>
+      )}
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
         <button onClick={props.onCancel} style={{ ...buttonStyle(colors.muted, "#252A3A", "#252A3A"), flex: 1 }}>Cancel</button>
         <button onClick={props.onSave} style={{ ...buttonStyle(), flex: 2 }}>Add</button>
@@ -1048,6 +1109,31 @@ function CategoryForm(props) {
       <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
         <button onClick={props.onCancel} style={{ ...buttonStyle(colors.muted, "#252A3A", "#252A3A"), flex: 1 }}>Cancel</button>
         <button onClick={props.onSave} style={{ ...buttonStyle(), flex: 2 }}>Add Category</button>
+      </div>
+    </div>
+  );
+}
+
+function AccountForm(props) {
+  const form = props.form;
+  const setForm = props.setForm;
+  return (
+    <div>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>New Account</div>
+      <FieldLabel>Account name</FieldLabel>
+      <input type="text" value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} placeholder="e.g. Joint Chequing" style={inputStyle} />
+      <FieldLabel>Institution</FieldLabel>
+      <input type="text" value={form.institution} onChange={(e) => setForm((p) => ({ ...p, institution: e.target.value }))} placeholder="e.g. TD Canada Trust" style={inputStyle} />
+      <FieldLabel>Account type</FieldLabel>
+      <select value={form.type} onChange={(e) => setForm((p) => ({ ...p, type: e.target.value }))} style={inputStyle}>
+        <option value="chequing">Chequing</option>
+        <option value="savings">Savings</option>
+        <option value="credit">Credit Card</option>
+        <option value="other">Other</option>
+      </select>
+      <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        <button onClick={props.onCancel} style={{ ...buttonStyle(colors.muted, "#252A3A", "#252A3A"), flex: 1 }}>Cancel</button>
+        <button onClick={props.onSave} style={{ ...buttonStyle(), flex: 2 }}>Add Account</button>
       </div>
     </div>
   );
